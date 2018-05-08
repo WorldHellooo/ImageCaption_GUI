@@ -110,9 +110,12 @@ class CaptionThread(QThread):
                 img = np.concatenate((img,  img,  img),  axis=2)
             img = img.astype('float32')/255.0
             img = torch.from_numpy(img.transpose([2, 0, 1])).cuda()
-            img = Variable(preprocess(img),  volatile=True)
-            tmp_fc,  tmp_att = self.my_resnet(img)
-
+            #print img.shape
+            with torch.no_grad():
+                img = Variable(preprocess(img))
+                #print img.shape
+                tmp_fc,  tmp_att = self.my_resnet(img)
+                #print tmp_fc.shape, tmp_att.shape
             fc_batch[i] = tmp_fc.data.cpu().float().numpy()
             att_batch[i] = tmp_att.data.cpu().float().numpy()
             info_struct = {}
@@ -125,16 +128,17 @@ class CaptionThread(QThread):
         data['infos']  = infos
         #t_cnn_end = time.time()
 
-        fc_feats = Variable(torch.from_numpy(fc_batch),  volatile=True).cuda()
-        att_feats = Variable(torch.from_numpy(att_batch),  volatile=True).cuda()
-        t_cnn_end = time.time()
-        seq,  _ = self.lstm_model.sample(fc_feats,  att_feats,  vars(self.opt))
-        sents = utils.decode_sequence(self.vocab,  seq)
-        self.resultSignal.emit(sents)
-        t_end = time.time()
-        print "Caption current image batch cost: "+str(t_end-t_start)+"s"
-        print "CNN process cost: "+str(t_cnn_end-t_cnn_start)+'s'
-        print "LSTM process cost: "+str(t_end-t_cnn_end)+'s'
+        with torch.no_grad():
+            fc_feats = Variable(torch.from_numpy(fc_batch)).cuda()
+            att_feats = Variable(torch.from_numpy(att_batch)).cuda()
+            t_cnn_end = time.time()
+            seq,  _ = self.lstm_model.sample(fc_feats,  att_feats,  vars(self.opt))
+            sents = utils.decode_sequence(self.vocab,  seq)
+            self.resultSignal.emit(sents)
+            t_end = time.time()
+            print "Caption current image batch cost: "+str(t_end-t_start)+"s"
+            print "CNN process cost: "+str(t_cnn_end-t_cnn_start)+'s'
+            print "LSTM process cost: "+str(t_end-t_cnn_end)+'s'
     def captionfromimgbatch(self,  cnn, lstm, img_batch, vocab, opt):
         self.my_resnet = cnn
         self.lstm_model = lstm

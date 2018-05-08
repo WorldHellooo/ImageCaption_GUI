@@ -47,6 +47,9 @@ class CaptionModel(nn.Module):
                 for q in range(rows): # for each beam expansion
                     #compute logprob of expanding beam q with word in (sorted) position c
                     local_logprob = ys[q,c]
+                    #print type(beam_logprobs_sum), type(local_logprob)
+                    #print beam_logprobs_sum.device
+                    #print local_logprob
                     candidate_logprob = beam_logprobs_sum[q] + local_logprob
                     candidates.append({'c':ix[q,c], 'q':q, 'p':candidate_logprob, 'r':local_logprob})
             candidates = sorted(candidates,  key=lambda x: -x['p'])
@@ -80,7 +83,7 @@ class CaptionModel(nn.Module):
 
         beam_seq = torch.LongTensor(self.seq_length, beam_size).zero_()
         beam_seq_logprobs = torch.FloatTensor(self.seq_length, beam_size).zero_()
-        beam_logprobs_sum = torch.zeros(beam_size) # running sum of logprobs for each beam
+        beam_logprobs_sum = torch.zeros(beam_size).cuda() # running sum of logprobs for each beam
         done_beams = []
 
         for t in range(self.seq_length):
