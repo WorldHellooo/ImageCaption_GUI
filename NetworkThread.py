@@ -4,6 +4,7 @@ from PyQt5.QtGui import *
 import argparse
 import skimage
 import skimage.io
+from PIL import Image
 import os
 import time
 from six.moves import cPickle
@@ -11,7 +12,10 @@ import numpy as np
 import torch
 from torch.autograd import Variable
 from torchvision import transforms as trn
-preprocess = trn.Compose([trn.Normalize([0.485, 0.456, 0.406], [0.229,  0.224,  0.225])])
+preprocess = trn.Compose([
+    trn.Resize(size=(256,256)),
+    trn.ToTensor(),
+    trn.Normalize([0.485, 0.456, 0.406], [0.229,  0.224,  0.225])])
 
 from misc.resnet_utils import myResnet
 import misc.utils as utils
@@ -103,25 +107,24 @@ class CaptionThread(QThread):
         att_batch = np.ndarray((self.batch_size,  14,  14,  2048),  dtype='float32')
         infos = []
         t_cnn_start = time.time()
+        minibatch = torch.FloatTensor(self.batch_size, 3, 256,256).cuda()
         for i in range(self.batch_size):
-            img = skimage.io.imread(self.img_batch[i])
-            if len(img.shape)==2:
-                img = img[:, :, np.newaxis]
-                img = np.concatenate((img,  img,  img),  axis=2)
-            img = img.astype('float32')/255.0
-            img = torch.from_numpy(img.transpose([2, 0, 1])).cuda()
-            #print img.shape
-            with torch.no_grad():
-                img = Variable(preprocess(img))
-                #print img.shape
-                tmp_fc,  tmp_att = self.my_resnet(img)
-                #print tmp_fc.shape, tmp_att.shape
-            fc_batch[i] = tmp_fc.data.cpu().float().numpy()
-            att_batch[i] = tmp_att.data.cpu().float().numpy()
+            img = Image.open(self.img_batch[i])
+            #img = img.astype('float32')/255.0
+            #minibatch = torch.from_numpy(img.transpose([2, 0, 1])).cuda()
+            minibatch[i,:,:,:] = preprocess(img)
+        
             info_struct = {}
             info_struct['id'] = str(i)
             info_struct['file_path'] = self.img_batch[i]
             infos.append(info_struct)
+        with torch.no_grad():
+            input = Variable(minibatch)
+                #print img.shape
+            tmp_fc,  tmp_att = self.my_resnet(input)
+                #print tmp_fc.shape, tmp_att.shape
+        fc_batch = tmp_fc.data.cpu().float().numpy()
+        att_batch = tmp_att.data.cpu().float().numpy()
         data = {}
         data['fc_feats'] = fc_batch
         data['att_feats'] = att_batch
