@@ -2,12 +2,13 @@
 import time
 import sys
 import os
+import cv2
 import math
 from PyQt5.QtCore import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import *
 from Ui_mainwindow import Ui_MainWindow
-from NetworkThread import LoadCNNThread, LoadLSTMThread, LoadImagesThread, CaptionThread
+from NetworkThread import LoadCNNThread, LoadLSTMThread, LoadImagesThread, CaptionThread, LoadCameraThread
 import argparse
 from six.moves import cPickle
 class MainWindow(QMainWindow,  Ui_MainWindow):
@@ -55,10 +56,15 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
         self.LoadLSTMThread = LoadLSTMThread()
         self.LoadLSTMThread.lstmSignal.connect(self.getlstm)
 
-        #load image
+        #load local image
         self.LoadImagesThread = LoadImagesThread()
         self.LoadImagesThread.getimageSignal.connect(self.getimages)
         
+        #load camera image
+        self.LoadCameraThread = LoadCameraThread()
+        self.LoadCameraThread.getcapSignal.connect(self.getcap)
+        self.timer_camera = QTimer()
+        self.timer_camera.timeout.connect(self.show_camera)
         #caption thread
         self.CaptionThread = CaptionThread()
         self.CaptionThread.resultSignal.connect(self.updatecaptions)
@@ -123,6 +129,15 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
     
     def loadimage(self):
         #load local image
+        self.FROM_CAMERA = False
+        if self.cap.isOpen():
+            self.cap.release()
+        if self.timer_camera.isActive():
+            self.timer_camera.stop()
+            self.pushButton_last.setDisabled(False)
+            self.pushButton_next.setDisabled(False)
+            self.pushButton_autostart.setDisabled(False)
+            self.pushButton_autostop.setDisabled(False)
         self.image_path = ''
         self.image_path = QFileDialog.getExistingDirectory(self,  "打开图片所在路径",  "./")
         if self.image_path:
@@ -137,8 +152,27 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
         
     def loadcamera(self):
         #load from camera
-        pass
-        
+        self.FROM_CAMERA = True
+        self.pushButton_last.setDisabled(True)
+        self.pushButton_next.setDisabled(True)
+        self.pushButton_autostart.setDisabled(True)
+        self.pushButton_autostop.setDisabled(True)
+        self.LoadCameraThread.start()
+
+    def getcap(self, cap):
+        self.cap = cap
+        self.timer_camera.start(30)
+    
+    def show_camera(self):
+        ret, self.frame = self.cap.read()
+        if ret:
+            show = cv2.resize(self.frame, (200, 200))
+            show = cv2.cvtColor(show, cv2.COLOR_BGR2RGB)
+            showImage = QImage(show.data, 200, 200, QImage.Format_RGB888)
+            self.image_1.setPixmap(QPixmap(showImage))
+        else:
+            print "Camera read error!"
+
     def savecaptions(self):
         #save all caption results
         pass
@@ -190,8 +224,12 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
             return
 
     def generateCaptions(self):
-        if self.cnn and self.lstm and self.current_batch:
-            self.CaptionThread.captionfromimgbatch(self.cnn, self.lstm, self.current_batch, self.vocab, self.opt)
+        if self.cnn and self.lstm:
+            if self.FROM_CAMERA:
+                print "self.captionthread.captionfromcamera"
+                self.CaptionThread.captionfromcamera(self.cnn, self.lstm, self.frame, self.vocab, self.opt)
+            elif self.FROM_CAMERA==False and self.current_batch:
+                self.CaptionThread.captionfromimgbatch(self.cnn, self.lstm, self.current_batch, self.vocab, self.opt)
         else:
             pass
     def updatecaptions(self,  sents=[]):

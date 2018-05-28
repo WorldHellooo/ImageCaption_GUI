@@ -7,6 +7,7 @@ import skimage.io
 from PIL import Image
 import os
 import time
+import cv2
 from six.moves import cPickle
 import numpy as np
 import torch
@@ -92,6 +93,16 @@ class LoadImagesThread(QThread):
                     n = n + 1
         self.getimageSignal.emit(self.images, self.ids)
 
+class LoadCameraThread(QThread):
+    getcapSignal = pyqtSignal(cv2.VideoCapture)
+    def __init__(self):
+        super(LoadCameraThread, self).__init__()
+        self.cap = None
+    def run(self):
+        self.cap = cv2.VideoCapture(1)
+        ret, frame = self.cap.read()
+        self.getcapSignal.emit(self.cap)
+
 class CaptionThread(QThread):
     resultSignal = pyqtSignal(list)
     
@@ -102,21 +113,31 @@ class CaptionThread(QThread):
     def run(self):
         #init network
         t_start = time.time()
-        self.batch_size = len(self.img_batch)
+        if self.FROM_CAMERA:
+            self.batch_size = 1
+        else:
+            self.batch_size = len(self.img_batch)
         fc_batch = np.ndarray((self.batch_size,   2048),  dtype='float32')
         att_batch = np.ndarray((self.batch_size,  14,  14,  2048),  dtype='float32')
         infos = []
         t_cnn_start = time.time()
         minibatch = torch.FloatTensor(self.batch_size, 3, 256,256).cuda()
+        
         for i in range(self.batch_size):
-            img = Image.open(self.img_batch[i])
+            if self.FROM_CAMERA:
+                img = Image.fromarray(cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB))
+            else:
+                img = Image.open(self.img_batch[i])
             #img = img.astype('float32')/255.0
             #minibatch = torch.from_numpy(img.transpose([2, 0, 1])).cuda()
             minibatch[i,:,:,:] = preprocess(img)
         
             info_struct = {}
             info_struct['id'] = str(i)
-            info_struct['file_path'] = self.img_batch[i]
+            if self.FROM_CAMERA:
+                info_struct['file_path'] = "CAMERA_"+str(i)
+            else:
+                info_struct['file_path'] = self.img_batch[i]
             infos.append(info_struct)
         with torch.no_grad():
             input = Variable(minibatch)
@@ -143,10 +164,18 @@ class CaptionThread(QThread):
             print "CNN process cost: "+str(t_cnn_end-t_cnn_start)+'s'
             print "LSTM process cost: "+str(t_end-t_cnn_end)+'s'
     def captionfromimgbatch(self,  cnn, lstm, img_batch, vocab, opt):
+        self.FROM_CAMERA=False
         self.my_resnet = cnn
         self.lstm_model = lstm
         self.img_batch = img_batch
         self.vocab = vocab
         self.opt = opt
         self.start()
-        
+    def captionfromcamera(self, cnn, lstm, frame, vocab, opt):
+        self.FROM_CAMERA=True
+        self.my_resnet = cnn
+        self.lstm_model = lstm
+        self.frame = frame
+        self.vocab = vocab
+        self.opt = opt
+        self.start()
