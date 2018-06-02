@@ -10,7 +10,6 @@ class myResnet(nn.Module):
 
     def forward(self, img, att_size=14):
         x = img
-        print x.shape
         x = self.resnet.conv1(x)
         x = self.resnet.bn1(x)
         x = self.resnet.relu(x)

@@ -8,7 +8,7 @@ from PyQt5.QtCore import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import *
 from Ui_mainwindow import Ui_MainWindow
-from NetworkThread import LoadCNNThread, LoadLSTMThread, LoadImagesThread, CaptionThread, LoadCameraThread
+from NetworkThread import LoadCNNThread, LoadLSTMThread, LoadImagesThread, CaptionThread, LoadCameraThread, LoadVideosThread
 import argparse
 from six.moves import cPickle
 class MainWindow(QMainWindow,  Ui_MainWindow):
@@ -28,10 +28,15 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
         self.opt = None
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.auto_check)
-
+        self.cap = None
+        self.current_video = {}
+        self.padding_images = QImage(":/img/newblack.jpg").scaled(200, 200, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        self.FROM_CAMERA = False        
+        self.FROM_VIDEO = False        
         #menu action
         self.actionLoadModel.triggered.connect(self.loadmodel)
         self.actionFromFile.triggered.connect(self.loadimage)
+        self.actionFromVideo.triggered.connect(self.loadvideo)
         self.actionFromCamera.triggered.connect(self.loadcamera)
         self.actionSaveCaptions.triggered.connect(self.savecaptions)
         self.action_Exit.triggered.connect(self.close)
@@ -65,6 +70,13 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
         self.LoadCameraThread.getcapSignal.connect(self.getcap)
         self.timer_camera = QTimer()
         self.timer_camera.timeout.connect(self.show_camera)
+        
+        #load videos
+        self.LoadVideosThread = LoadVideosThread()
+        self.LoadVideosThread.getvideoSignal.connect(self.getvideos)
+        self.timer_video = QTimer()
+        self.timer_video.timeout.connect(self.show_video)
+
         #caption thread
         self.CaptionThread = CaptionThread()
         self.CaptionThread.resultSignal.connect(self.updatecaptions)
@@ -130,7 +142,7 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
     def loadimage(self):
         #load local image
         self.FROM_CAMERA = False
-        if self.cap.isOpen():
+        if self.cap and self.cap.isOpen():
             self.cap.release()
         if self.timer_camera.isActive():
             self.timer_camera.stop()
@@ -142,14 +154,29 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
         self.image_path = QFileDialog.getExistingDirectory(self,  "打开图片所在路径",  "./")
         if self.image_path:
             self.LoadImagesThread.loadimagesfromdir(self.image_path)
+
+    def loadvideo(self):
+        self.video_path = ''
+        self.video_path = QFileDialog.getExistingDirectory(self, "打开视频所在路径",  "./")
+        if self.video_path:
+            self.LoadVideosThread.loadvideosfromdir(self.video_path)
     
     def getimages(self, images, ids):
+        self.FROM_VIDEO = False
         self.images = images
         self.ids = ids
         self.batch_id = 1
         self.num_images = len(self.images)
         self.changeBatchSignal.emit()
-        
+    
+    def getvideos(self, videos, ids):
+        self.FROM_VIDEO = True
+        self.videos = videos
+        self.ids = ids
+        self.batch_id = 1
+        self.num_videos = len(self.videos)
+        self.changeBatchSignal.emit()
+
     def loadcamera(self):
         #load from camera
         self.FROM_CAMERA = True
@@ -173,6 +200,34 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
         else:
             print "Camera read error!"
 
+    def show_video(self):
+    ## depends on self.current_video(dict)
+    ## modify self.current_frames(dict) and show video frames on GUI
+        self.current_frames = {}
+        show_frames = {}
+        for video_id in self.current_video.keys():
+            ret, frame = self.current_video[video_id].read()
+            if ret:
+                self.current_frames[video_id] = frame
+            else:
+                self.current_video.pop(video_id)
+        for frame_id in self.current_frames.keys():
+            show = cv2.resize(self.current_frames[frame_id], (200, 200))
+            show = cv2.cvtColor(show, cv2.COLOR_BGR2RGB)
+            showImage = QImage(show.data, 200, 200, QImage.Format_RGB888)
+            show_frames[frame_id] = showImage
+        for i in range(1, 9):
+            if str(i) not in show_frames:
+                show_frames[str(i)] = self.padding_images
+        self.image_1.setPixmap(QPixmap(show_frames['1']))
+        self.image_2.setPixmap(QPixmap(show_frames['2']))
+        self.image_3.setPixmap(QPixmap(show_frames['3']))
+        self.image_4.setPixmap(QPixmap(show_frames['4']))
+        self.image_5.setPixmap(QPixmap(show_frames['5']))
+        self.image_6.setPixmap(QPixmap(show_frames['6']))
+        self.image_7.setPixmap(QPixmap(show_frames['7']))
+        self.image_8.setPixmap(QPixmap(show_frames['8']))
+
     def savecaptions(self):
         #save all caption results
         pass
@@ -189,7 +244,11 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
             self.changeBatchSignal.emit()
     
     def getNextBatch(self):
-        if self.batch_id >= math.ceil(self.num_images / 8):
+        if self.FROM_VIDEO:
+            upperbound = math.ceil(self.num_videos / 8)
+        else:
+            upperbound = math.ceil(self.num_images / 8)
+        if self.batch_id >= upperbound:
             return
         else:
             self.batch_id = self.batch_id + 1
@@ -207,18 +266,24 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
         self.pushButton_autostart.setDisabled(False)
     def auto_check(self):
         if self.autoFlag:
-            self.getNextBatch()
+            if not self.FROM_VIDEO:
+                self.getNextBatch()
+            elif not self.current_frames:
+                self.getNextBatch()
             self.autocaption()
         else:
             return
     def autocaption(self):
-        if self.cnn and self.lstm and self.current_batch:
+        if self.cnn and self.lstm and (self.current_batch or self.current_frames):
             if self.autoFlag:
                 self.pushButton_last.setDisabled(True)
                 self.pushButton_next.setDisabled(True)
                 self.pushButton_generate.setDisabled(True)
                 self.pushButton_autostart.setDisabled(True)
-                self.timer.start(4000)
+                if self.FROM_VIDEO:
+                    self.timer.start(4000)           
+                else:
+                    self.timer.start(5000)
                 self.generateCaptions()
         else:
             return
@@ -226,15 +291,28 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
     def generateCaptions(self):
         if self.cnn and self.lstm:
             if self.FROM_CAMERA:
-                print "self.captionthread.captionfromcamera"
                 self.CaptionThread.captionfromcamera(self.cnn, self.lstm, self.frame, self.vocab, self.opt)
-            elif self.FROM_CAMERA==False and self.current_batch:
+            elif self.FROM_VIDEO:
+                self.frame_id = []
+                frame_batch = []
+                for i in range(1, 9):
+                    if str(i) in self.current_frames:
+                        frame_batch.append(self.current_frames[str(i)])
+                        self.frame_id.append(i)
+                self.CaptionThread.captionfromvideo(self.cnn, self.lstm, frame_batch, self.vocab, self.opt)
+            elif self.current_batch:
                 self.CaptionThread.captionfromimgbatch(self.cnn, self.lstm, self.current_batch, self.vocab, self.opt)
         else:
             pass
-    def updatecaptions(self,  sents=[]):
-        while len(sents) < 8:
-            sents.append('')
+    def updatecaptions(self,  captions=[]):
+        sents = ['']*8
+        if self.FROM_VIDEO:
+            for i in range(len(captions)):
+                sents[self.frame_id[i]-1] = captions[i]
+        else:
+            sents = captions
+            while len(sents) < 8:
+                sents.append('')
         self.label_1.setText('1. '+sents[0])
         self.label_2.setText('2. '+sents[1])
         self.label_3.setText('3. '+sents[2])
@@ -245,32 +323,48 @@ class MainWindow(QMainWindow,  Ui_MainWindow):
         self.label_8.setText('8. '+sents[7])
     
     def show_images(self):
-        #show the current batch of images on mainwindow
-        self.current_batch = []
-        current_images = []
-        print("Batch ID: " + str(self.batch_id) + '/'+str(math.ceil(self.num_images/8)))
-        if self.batch_id >= 1 and self.batch_id <= math.ceil(self.num_images/8) and self.images:
-            if self.num_images >= self.batch_id * 8:
-                self.current_batch = self.images[(self.batch_id-1)*8 : (self.batch_id*8)]
-            else:
+        if not self.FROM_VIDEO:
+            #show the current batch of images on mainwindow
+            self.current_batch = []
+            current_images = []
+            print("Batch ID: " + str(self.batch_id) + '/'+str(math.ceil(self.num_images/8.0)))
+            if self.batch_id >= 1 and self.batch_id <= math.ceil(self.num_images/8.0) and self.images:
+                if self.num_images >= self.batch_id * 8:
+                    self.current_batch = self.images[(self.batch_id-1)*8 : (self.batch_id*8)]
+                else:
                 # remaining images is not enough for a new batch, padding with black image
-                remaining_num = self.num_images - (self.batch_id-1) * 8
-                self.current_batch = self.images[(self.batch_id-1)*8 : ]
-                padding_images = [":/img/newblack.jpg" for i in range(8-remaining_num)]
-                self.current_batch.extend(padding_images)
-            for imgname in self.current_batch:
-                img = QImage(imgname)
-                img = img.scaled(200,  200,  Qt.IgnoreAspectRatio,  Qt.SmoothTransformation)
-                current_images.append(img)
-            self.image_1.setPixmap(QPixmap(current_images[0]))
-            self.image_2.setPixmap(QPixmap(current_images[1]))
-            self.image_3.setPixmap(QPixmap(current_images[2]))
-            self.image_4.setPixmap(QPixmap(current_images[3]))
-            self.image_5.setPixmap(QPixmap(current_images[4]))
-            self.image_6.setPixmap(QPixmap(current_images[5]))
-            self.image_7.setPixmap(QPixmap(current_images[6]))
-            self.image_8.setPixmap(QPixmap(current_images[7]))
+                    remaining_num = self.num_images - (self.batch_id-1) * 8
+                    self.current_batch = self.images[(self.batch_id-1)*8 : ]
+                    padding_images = [":/img/newblack.jpg" for i in range(8-remaining_num)]
+                    self.current_batch.extend(padding_images)
+                for imgname in self.current_batch:
+                    img = QImage(imgname)
+                    img = img.scaled(200,  200,  Qt.IgnoreAspectRatio,  Qt.SmoothTransformation)
+                    current_images.append(img)
+                self.image_1.setPixmap(QPixmap(current_images[0]))
+                self.image_2.setPixmap(QPixmap(current_images[1]))
+                self.image_3.setPixmap(QPixmap(current_images[2]))
+                self.image_4.setPixmap(QPixmap(current_images[3]))
+                self.image_5.setPixmap(QPixmap(current_images[4]))
+                self.image_6.setPixmap(QPixmap(current_images[5]))
+                self.image_7.setPixmap(QPixmap(current_images[6]))
+                self.image_8.setPixmap(QPixmap(current_images[7]))
         
+        elif self.FROM_VIDEO:
+            print("Batch ID: " + str(self.batch_id) + '/'+str(math.ceil(self.num_videos/8.0)))
+            if self.batch_id >= 1 and self.batch_id <= math.ceil(self.num_videos/8.0) and self.videos:
+                if self.current_video:
+                    self.timer_video.stop()
+                    for k in self.current_video:
+                        self.current_video[k].release()
+                self.current_video = {}
+                if self.num_videos >= self.batch_id * 8:
+                    for i in range(8):
+                        self.current_video[str(i+1)] = cv2.VideoCapture(self.videos[(self.batch_id-1)*8+i])
+                else:
+                    for i in range(self.num_videos + 8 - self.batch_id * 8):
+                        self.current_video[str(i+1)] = cv2.VideoCapture(self.videos[(self.batch_id-1)*8+i])
+            self.timer_video.start(30)
         #clean the caption area
         self.updatecaptions()
 

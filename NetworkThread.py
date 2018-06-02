@@ -50,7 +50,7 @@ class LoadLSTMThread(QThread):
     lstmSignal = pyqtSignal(CaptionModel)
     def __init__(self):
         super(LoadLSTMThread,  self).__init__()
-    
+
     def loadmodelfromdir(self, lstm_model_path, opt):
         self.lstm_model_path = lstm_model_path
         self.opt = opt
@@ -93,6 +93,35 @@ class LoadImagesThread(QThread):
                     n = n + 1
         self.getimageSignal.emit(self.images, self.ids)
 
+class LoadVideosThread(QThread):
+    getvideoSignal = pyqtSignal(list, list)
+    def __init__(self):
+	super(LoadVideosThread, self).__init__()
+        
+    def loadvideosfromdir(self, video_path):
+        self.video_path = video_path
+        self.start()
+
+    def run(self):
+        self.videos = []
+        self.ids = []
+        def isVideo(f):
+            supportedExt = ['.mp4',  '.MP4',  '.avi', '.AVI']
+            for ext in supportedExt:
+                start_idx = f.rfind(ext)
+                if start_idx >= 0 and start_idx + len(ext) == len(f):
+                    return True
+            return False
+        n = 1
+        for root, dirs,  files in os.walk(self.video_path,  topdown=False):
+            for file in files:
+                fullpath = os.path.join(self.video_path,  file)
+                if isVideo(fullpath):
+                    self.videos.append(fullpath)
+                    self.ids.append(str(n))
+                    n = n + 1
+        self.getvideoSignal.emit(self.videos, self.ids)
+
 class LoadCameraThread(QThread):
     getcapSignal = pyqtSignal(cv2.VideoCapture)
     def __init__(self):
@@ -109,12 +138,15 @@ class CaptionThread(QThread):
     def __init__(self):
         super(CaptionThread,  self).__init__()
         self.img_batch = []
-        
+        self.FROM_VIDEO = False
+        self.FROM_CAMERA = False
     def run(self):
         #init network
         t_start = time.time()
         if self.FROM_CAMERA:
             self.batch_size = 1
+        elif self.FROM_VIDEO:
+            self.batch_size = len(self.frame_batch)
         else:
             self.batch_size = len(self.img_batch)
         fc_batch = np.ndarray((self.batch_size,   2048),  dtype='float32')
@@ -126,6 +158,8 @@ class CaptionThread(QThread):
         for i in range(self.batch_size):
             if self.FROM_CAMERA:
                 img = Image.fromarray(cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB))
+            elif self.FROM_VIDEO:
+                img = Image.fromarray(cv2.cvtColor(self.frame_batch[i], cv2.COLOR_BGR2RGB))
             else:
                 img = Image.open(self.img_batch[i])
             #img = img.astype('float32')/255.0
@@ -135,15 +169,15 @@ class CaptionThread(QThread):
             info_struct = {}
             info_struct['id'] = str(i)
             if self.FROM_CAMERA:
-                info_struct['file_path'] = "CAMERA_"+str(i)
+                info_struct['file_path'] = "CAMERA_"+str(i+1)
+            elif self.FROM_VIDEO:
+                info_struct['file_path'] = "VIDEO_"+str(i+1)
             else:
                 info_struct['file_path'] = self.img_batch[i]
             infos.append(info_struct)
         with torch.no_grad():
             input = Variable(minibatch)
-                #print img.shape
             tmp_fc,  tmp_att = self.my_resnet(input)
-                #print tmp_fc.shape, tmp_att.shape
         fc_batch = tmp_fc.data.cpu().float().numpy()
         att_batch = tmp_att.data.cpu().float().numpy()
         data = {}
@@ -173,9 +207,19 @@ class CaptionThread(QThread):
         self.start()
     def captionfromcamera(self, cnn, lstm, frame, vocab, opt):
         self.FROM_CAMERA=True
+        self.FROM_VIDEO=False
         self.my_resnet = cnn
         self.lstm_model = lstm
         self.frame = frame
+        self.vocab = vocab
+        self.opt = opt
+        self.start()
+    def captionfromvideo(self, cnn, lstm, frame_batch, vocab, opt):
+        self.FROM_VIDEO=True
+        self.FROM_CAMERA=False
+        self.my_resnet = cnn
+        self.lstm_model = lstm
+        self.frame_batch = frame_batch
         self.vocab = vocab
         self.opt = opt
         self.start()
